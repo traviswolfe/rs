@@ -1,6 +1,6 @@
-program new;
+program monkey;
 
-Type STATES = (Rope, TropicalTree, SteppingStone, TropicalTree2, Monkeybars, SkullSlope, Logout);
+Type STATES = (Rope, TropicalTree, SteppingStone, TropicalTree2, Monkeybars, SkullSlope, Logout, RunEnergyCheck);
 Type TFuncNoArgsBool = function():Boolean;
 Type state = record
     action : TFuncNoArgsBool;        //Function that defines the action/behavior
@@ -31,7 +31,7 @@ hotkeysPauseLatch,hotkeysHomeLatch,hotkeysPauseRequested:Boolean = false;
 
 
 currentTime,verifiedTime,nextActionTime:Integer = 0;
-verificationLimit:Integer = 5000;
+verificationLimit:Integer = 10000;
 done,verified,wasPaused,stateFound:Boolean = false;
 currentState,st:STATES;
 
@@ -141,9 +141,17 @@ begin
   end;
 end;
 
-function areWeLoggedIn():Boolean;
+function isLoggedIn():Boolean;
 begin
   result := GetColor(446,488) = 1908328;
+end;
+function isRunning():Boolean;
+begin
+  result := GetColor(568,128) = 6806252;
+end;
+function isRunEnergyMaxed():Boolean;
+begin
+  result := GetColor(534,131) = 65280;
 end;
 
 function RopeAction():Boolean;
@@ -159,7 +167,7 @@ end;
 
 function TropicalTreeAction():Boolean;
 begin
-  MoveAndClick(variance(275,6),variance(132,6), 1);
+  MoveAndClick(variance(275,5),variance(132,5), 1);
   result:=true;
 end;
 function TropicalTreeVerification:Boolean;
@@ -168,9 +176,23 @@ begin
   result:=FindColor(tempX,tempY,65280,270,143,276,149);
 end;
 
+function RunEnergyCheckAction():Boolean;
+begin
+  if((isRunning() = false) and (isRunEnergyMaxed() = true)) then
+  begin
+    MoveAndClick(variance(566,5),variance(123,5), 1);
+  end;
+  result:=true;
+end;
+function RunEnergyCheckVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:= true;
+end;
+
 function SteppingStoneAction():Boolean;
 begin
-  MoveAndClick(variance(25,2),variance(238,2), 1);
+  MoveAndClick(variance(25,1),variance(238,1), 1);
   result:=true;
 end;
 function SteppingStoneVerification:Boolean;
@@ -187,7 +209,7 @@ end;
 function TropicalTree2Verification:Boolean;
 var tempX,tempY:Integer;
 begin
-  result:=FindColor(tempX,tempY,65280,248,147,253,153);
+  result:=FindColor(tempX,tempY,65280,260,147,263,153);// or FindColor(tempX,tempY,45568,237,175,243,181));
 end;
 
 function MonkeybarsAction():Boolean;
@@ -209,7 +231,7 @@ end;
 function SkullSlopeVerification:Boolean;
 var tempX,tempY:Integer;
 begin
-  result:=FindColor(tempX,tempY,65280,237,175,243,181);
+  result:=(FindColor(tempX,tempY,65280,237,175,243,181) or FindColor(tempX,tempY,45568,237,175,243,181));
 end;
 
 function LogoutAction():Boolean;
@@ -222,7 +244,7 @@ begin
 end;
 function LogoutVerification():Boolean;
 begin
-  result := areWeLoggedIn();
+  result := isLoggedIn();
 end;
 
 
@@ -233,61 +255,71 @@ begin
   statesArray[Ord(Rope)].nextState := TropicalTree;
   statesArray[Ord(Rope)].failedState := Logout;
   statesArray[Ord(Rope)].gracePeriod := 3500;
-  statesArray[Ord(Rope)].deadTime := 500;
-  statesArray[Ord(Rope)].deadTimeVariance := 150;
+  statesArray[Ord(Rope)].deadTime := 600;
+  statesArray[Ord(Rope)].deadTimeVariance := 250;
 
   statesArray[Ord(TropicalTree)].action := @TropicalTreeAction;
   statesArray[Ord(TropicalTree)].verification := @TropicalTreeVerification;
-  statesArray[Ord(TropicalTree)].nextState := SteppingStone;
+  statesArray[Ord(TropicalTree)].nextState := RunEnergyCheck;
   statesArray[Ord(TropicalTree)].failedState := Logout;
   statesArray[Ord(TropicalTree)].gracePeriod := 7000;
-  statesArray[Ord(TropicalTree)].deadTime := 800;
-  statesArray[Ord(TropicalTree)].deadTimeVariance := 150;
+  statesArray[Ord(TropicalTree)].deadTime := 1200;
+  statesArray[Ord(TropicalTree)].deadTimeVariance := 350;
+
+  statesArray[Ord(RunEnergyCheck)].action := @RunEnergyCheckAction;
+  statesArray[Ord(RunEnergyCheck)].verification := @RunEnergyCheckVerification;
+  statesArray[Ord(RunEnergyCheck)].nextState := SteppingStone;
+  statesArray[Ord(RunEnergyCheck)].failedState := Logout;
+  statesArray[Ord(RunEnergyCheck)].gracePeriod := 300;
+  statesArray[Ord(RunEnergyCheck)].deadTime := 700;
+  statesArray[Ord(RunEnergyCheck)].deadTimeVariance := 350;
 
   statesArray[Ord(SteppingStone)].action := @SteppingStoneAction;
   statesArray[Ord(SteppingStone)].verification := @SteppingStoneVerification;
   statesArray[Ord(SteppingStone)].nextState := TropicalTree2;
   statesArray[Ord(SteppingStone)].failedState := Logout;
-  statesArray[Ord(SteppingStone)].gracePeriod := 6000;
-  statesArray[Ord(SteppingStone)].deadTime := 500;
-  statesArray[Ord(SteppingStone)].deadTimeVariance := 150;
+  statesArray[Ord(SteppingStone)].gracePeriod := 5000;
+  statesArray[Ord(SteppingStone)].deadTime := 600;
+  statesArray[Ord(SteppingStone)].deadTimeVariance := 250;
 
   statesArray[Ord(TropicalTree2)].action := @TropicalTree2Action;
   statesArray[Ord(TropicalTree2)].verification := @TropicalTree2Verification;
   statesArray[Ord(TropicalTree2)].nextState := Monkeybars;
   statesArray[Ord(TropicalTree2)].failedState := Logout;
-  statesArray[Ord(TropicalTree2)].gracePeriod := 6500;
-  statesArray[Ord(TropicalTree2)].deadTime := 500;
-  statesArray[Ord(TropicalTree2)].deadTimeVariance := 150;
+  statesArray[Ord(TropicalTree2)].gracePeriod := 9000;
+  statesArray[Ord(TropicalTree2)].deadTime := 900;
+  statesArray[Ord(TropicalTree2)].deadTimeVariance := 300;
 
   statesArray[Ord(Monkeybars)].action := @MonkeybarsAction;
   statesArray[Ord(Monkeybars)].verification := @MonkeybarsVerification;
   statesArray[Ord(Monkeybars)].nextState := SkullSlope;
   statesArray[Ord(Monkeybars)].failedState := Logout;
   statesArray[Ord(Monkeybars)].gracePeriod := 2000;
-  statesArray[Ord(Monkeybars)].deadTime := 500;
-  statesArray[Ord(Monkeybars)].deadTimeVariance := 150;
+  statesArray[Ord(Monkeybars)].deadTime := 600;
+  statesArray[Ord(Monkeybars)].deadTimeVariance := 250;
 
   statesArray[Ord(SkullSlope)].action := @SkullSlopeAction;
   statesArray[Ord(SkullSlope)].verification := @SkullSlopeVerification;
   statesArray[Ord(SkullSlope)].nextState := Rope;
   statesArray[Ord(SkullSlope)].failedState := Logout;
   statesArray[Ord(SkullSlope)].gracePeriod := 4000;
-  statesArray[Ord(SkullSlope)].deadTime := 500;
-  statesArray[Ord(SkullSlope)].deadTimeVariance := 150;
+  statesArray[Ord(SkullSlope)].deadTime := 600;
+  statesArray[Ord(SkullSlope)].deadTimeVariance := 250;
 
   statesArray[Ord(Logout)].action := @LogoutAction;
   statesArray[Ord(Logout)].verification := @LogoutVerification;
   statesArray[Ord(Logout)].nextState := Logout;
   statesArray[Ord(Logout)].failedState := Logout;
   statesArray[Ord(Logout)].gracePeriod := 5000;
-  statesArray[Ord(Logout)].deadTime := 250;
-  statesArray[Ord(Logout)].deadTimeVariance := 150;
+  statesArray[Ord(Logout)].deadTime := 650;
+  statesArray[Ord(Logout)].deadTimeVariance := 250;
 
   //initial state
   currentState := Rope;
   GetMousePos(mouseTarX,mouseTarY);
   wasPaused := true;
+  hotkeysPauseRequested := true;
+  Log('Script starting paused - press PAUSE key to start');
 
   repeat
     currentTime := GetTimeRunning();
@@ -368,5 +400,6 @@ begin
       //we are currently paused
       wasPaused := true;
     end;
-  until(areWeLoggedIn() = false);
+  until(isLoggedIn() = false);
+  Log('Logout detecting.');
 end.
