@@ -30,9 +30,9 @@ hotkeysHome:Integer = 36;  //Logout
 hotkeysPauseLatch,hotkeysHomeLatch,hotkeysPauseRequested:Boolean = false;
 
 
-currentTime,verifiedTime,nextActionTime:Integer = 0;
+currentTime,verifiedTime,nextActionTime,logoutDetectedTime:Integer = 0;
 verificationLimit:Integer = 10000;
-done,verified,wasPaused,stateFound:Boolean = false;
+done,verified,wasPaused,stateFound,logoutPossible:Boolean = false;
 currentState,st:STATES;
 
 
@@ -143,7 +143,27 @@ end;
 
 function isLoggedIn():Boolean;
 begin
-  result := GetColor(446,488) = 1908328;
+  //Check the pixel in the timer. Wait at least 100ms after it changes before
+  //assuming we're logged out (for some reason level ups cause it to flash white
+  //for less than a frame, which we can catch)
+  result := true;
+  if(GetColor(446,488) = 1908328) then
+  begin
+    logoutPossible := false;
+  end else
+  begin
+    if(logoutPossible) then
+    begin
+      if(currentTime > (logoutDetectedTime + 100)) then
+      begin
+        result := false;
+      end;
+    end else
+    begin
+      logoutPossible := true;
+      logoutDetectedTime := currentTime;
+    end;
+  end;
 end;
 function isRunning():Boolean;
 begin
