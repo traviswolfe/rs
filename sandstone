@@ -1,0 +1,394 @@
+program sandstone;
+
+Type STATES = (Rock1, Rock2, Grinder, WalkBack, Logout);
+Type TFuncNoArgsBool = function():Boolean;
+Type state = record
+    action : TFuncNoArgsBool;        //Function that defines the action/behavior
+    verification : TFuncNoArgsBool;  //Function that verifies we're in the correct state
+    nextState : STATES;              //State we should transition to upon success
+    failedState : STATES;            //State we transition to upon failure
+    gracePeriod : Integer;           //How long to wait for success to happen
+    deadTime : Integer;              //How long to wait after success before performing action
+    deadTimeVariance : Integer;      //Variance for dead time
+  end;
+Type statesArrayType = Array[0..Ord(High(STATES))] of state;
+Var statesArray: statesArrayType;
+function fcn(AFunction: TFuncNoArgsBool): Boolean;
+begin
+  result := AFunction()
+end;
+
+var
+mouseTarX,mouseTarY,mouseTarTime,mouseStartTime,mouseXDelta,mouseYDelta,
+mouseClicksLeft,mouseClickStart,mouseClickUntil,mouseClickDelay:Integer = 0;
+mouseIsDown:Boolean = false;
+
+hotkeysPause:Integer = 19; //pause script
+hotkeysEscape:Integer = 27;//escape, close window or go to logout tab
+hotkeysEnd:Integer = 35;   //stop script
+hotkeysHome:Integer = 36;  //Logout
+hotkeysPauseLatch,hotkeysHomeLatch,hotkeysPauseRequested:Boolean = false;
+
+
+currentTime,verifiedTime,nextActionTime,logoutDetectedTime:Integer = 0;
+verificationLimit:Integer = 10000;
+done,verified,wasPaused,stateFound,logoutPossible:Boolean = false;
+currentState,st:STATES;
+
+
+
+procedure Log(msg:String);
+begin
+  Write(FormatDateTime('hh:mm:ss',Now()) + ' : ');
+  Write(currentState);
+  WriteLn(': ' + msg);
+end;
+
+function variance(num:Integer;varianceAmount:Integer):Integer;
+begin
+  result := num - varianceAmount + RandomRange(0,varianceAmount) + RandomRange(0,varianceAmount);
+end;
+
+procedure MoveAndClick(X:Integer; Y:Integer; NumClicks:Integer);
+var mouseCurrentX,mouseCurrentY:Integer;
+begin
+  //Get the current mouse position, calculate the delta the mouse needs to move
+  //by. Then set the amount of time it should take to reach the destination,
+  //as well as how long after it reaches the destination before clicking.
+  GetMousePos(mouseCurrentX,mouseCurrentY);
+  mouseTarX := X;
+  mouseTarY := Y;
+  mouseXDelta := mouseTarX - mouseCurrentX;
+  mouseYDelta := mouseTarY - mouseCurrentY;
+  mouseClicksLeft := NumClicks;
+  mouseStartTime := GetTimeRunning();
+  mouseTarTime := mouseStartTime + variance(220,80);
+  mouseClickDelay := mouseTarTime + variance(150,30);
+end;
+
+procedure HandleMouse;
+var percent: Double;
+begin
+  //if we haven't reached the target time, then mouse should be in middle
+  //of a movement
+  if(currentTime < mouseTarTime) then
+  begin
+    percent := 1 - ((currentTime - mouseStartTime) / (mouseTarTime - mouseStartTime));
+    MoveMouse(Round(mouseTarX - (percent * mouseXDelta)),Round(mouseTarY - (percent * mouseYDelta)));
+  end else
+  //otherwise, we're not in the middle of a movement, and handle any clicks
+  begin
+    MoveMouse(mouseTarX,mouseTarY);
+    //if there are clicks left to perform, and we haven't passed the delay
+    //then wait until the delay has passed, and then perform a click
+    if((mouseClicksLeft > 0) and (mouseClickDelay < currentTime)) then
+    begin
+      HoldMouse(mouseTarX,mouseTarY,mouse_Left);
+      mouseClickUntil := currentTime + variance (100,30);
+      mouseClickDelay := mouseClickUntil + variance (100,30);
+      mouseClicksLeft := mouseClicksLeft - 1;
+      mouseIsDown := true;
+    end else if((mouseIsDown = true) and (mouseClickUntil < currentTime)) then
+    //wait until we've held down the mouse for long enough, then release
+    begin
+      ReleaseMouse(mouseTarX,mouseTarY,mouse_Left);
+      mouseIsDown := false;
+    end;
+  end;
+end;
+
+procedure CheckHotkeys;
+begin
+  //Check if script end is requested by pressing "end" key
+  if(IsKeyDown(hotkeysEnd)) then
+  begin
+    Log('END key pressed. Exiting script.');
+    Halt();
+  end;
+
+  //Check if script should be paused
+  if(IsKeyDown(hotkeysPause) and (hotkeysPauseLatch = false)) then
+  begin
+    hotkeysPauseLatch := true;
+    if(hotkeysPauseRequested) then
+    begin
+      Log('PAUSE key pressed. Resuming script.');
+      hotkeysPauseRequested := false;
+    end else
+    begin
+      Log('PAUSE key pressed. Pausing until PAUSE is pressed again.');
+      hotkeysPauseRequested := true;
+    end;
+  end;
+  //Unlatch Pause (prevents multiple pause/unpause situations when holding key for a long time)
+  if(hotkeysPauseLatch and (IsKeyDown(hotkeysPause) = false)) then
+  begin
+    hotkeysPauseLatch := false;
+  end;
+
+  //Check if logout button pressed
+  if(IsKeyDown(hotkeysHome) and (hotkeysHomeLatch = false)) then
+  begin
+    hotkeysHomeLatch := true;
+    Log('HOME key pressed. Attempting logout and pausing.');
+    //Logout();
+    hotkeysPauseRequested := true;
+  end;
+  //Unlatch logout
+  if(hotkeysHomeLatch and (IsKeyDown(hotkeysHome) = false)) then
+  begin
+    hotkeysHomeLatch := false;
+  end;
+end;
+
+function isLoggedIn():Boolean;
+begin
+  //Check the pixel in the timer. Wait at least 100ms after it changes before
+  //assuming we're logged out (for some reason level ups cause it to flash white
+  //for less than a frame, which we can catch)
+  result := true;
+  if(GetColor(446,488) = 1908328) then
+  begin
+    logoutPossible := false;
+  end else
+  begin
+    if(logoutPossible) then
+    begin
+      if(currentTime > (logoutDetectedTime + 100))
+      then
+      begin
+        result := false;
+      end;
+    end else
+    begin
+      logoutPossible := true;
+      logoutDetectedTime := currentTime;
+    end;
+  end;
+end;
+function isRunning():Boolean;
+begin
+  result := GetColor(568,128) = 6806252;
+end;
+function isRunEnergyMaxed():Boolean;
+begin
+  result := GetColor(534,131) = 65280;
+end;
+
+function isBackpackFull():Boolean;
+begin
+  result := GetColor(703,447) <> 3489352;
+end;
+
+
+
+function Rock1Action():Boolean;
+begin
+  MoveAndClick(variance(260,5),variance(158,5), 1);
+  result:=true;
+end;
+function Rock1Verification:Boolean;
+var tempX,tempY:Integer;
+begin
+  //if backpack is full
+  if(isBackpackFull()) then
+  begin
+    statesArray[Ord(Rock1)].nextState := Grinder;
+    result := true;
+  end else
+  begin
+    statesArray[Ord(Rock1)].nextState := Rock2;
+    result:=(FindColor(tempX,tempY,1267838,261,154,263,156)) and (FindColor(tempX,tempY,64764,290,169,292,171));
+  end;
+end;
+
+function Rock2Action():Boolean;
+begin
+  MoveAndClick(variance(273,5),variance(175,5), 1);
+  result:=true;
+end;
+function Rock2Verification:Boolean;
+var tempX,tempY:Integer;
+begin
+  //if backpack is full
+  if(isBackpackFull()) then
+  begin
+    statesArray[Ord(Rock2)].nextState := Grinder;
+    result := true;
+  end else
+  begin
+    statesArray[Ord(Rock2)].nextState := Rock1;
+    result:=(FindColor(tempX,tempY,1267838,274,169,276,171)) and (FindColor(tempX,tempY,64764,290,169,292,171));
+  end;
+end;
+
+function GrinderAction():Boolean;
+begin
+  MoveAndClick(variance(38,15),variance(244,15), 1);
+  result:=true;
+end;
+function GrinderVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,64764,290,169,292,171);
+end;
+
+function WalkBackAction():Boolean;
+begin
+  MoveAndClick(378,138, 1);
+  result:=true;
+end;
+function WalkBackVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,65535,264,207,266,209);
+end;
+
+
+
+function LogoutAction():Boolean;
+begin
+  PressKey(27);//ESC
+  Wait(variance(400,175));
+  PressKey(27);//Press for a second time, in case other menu is open
+  MoveAndClick(variance(641,70),variance(431,17), 1);
+  result := true;
+end;
+function LogoutVerification():Boolean;
+begin
+  result := isLoggedIn();
+end;
+
+
+
+begin
+  //define states
+  statesArray[Ord(Rock1)].action := @Rock1Action;
+  statesArray[Ord(Rock1)].verification := @Rock1Verification;
+  statesArray[Ord(Rock1)].nextState := Rock2;
+  statesArray[Ord(Rock1)].failedState := Logout;
+  statesArray[Ord(Rock1)].gracePeriod := 2450;
+  statesArray[Ord(Rock1)].deadTime := 250;
+  statesArray[Ord(Rock1)].deadTimeVariance := 100;
+
+  statesArray[Ord(Rock2)].action := @Rock2Action;
+  statesArray[Ord(Rock2)].verification := @Rock2Verification;
+  statesArray[Ord(Rock2)].nextState := Grinder;
+  statesArray[Ord(Rock2)].failedState := Logout;
+  statesArray[Ord(Rock2)].gracePeriod := 2450;
+  statesArray[Ord(Rock2)].deadTime := 250;
+  statesArray[Ord(Rock2)].deadTimeVariance := 100;
+
+  statesArray[Ord(Grinder)].action := @GrinderAction;
+  statesArray[Ord(Grinder)].verification := @GrinderVerification;
+  statesArray[Ord(Grinder)].nextState := WalkBack;
+  statesArray[Ord(Grinder)].failedState := Logout;
+  statesArray[Ord(Grinder)].gracePeriod := 500;
+  statesArray[Ord(Grinder)].deadTime := 500;
+  statesArray[Ord(Grinder)].deadTimeVariance := 350;
+
+  statesArray[Ord(WalkBack)].action := @WalkBackAction;
+  statesArray[Ord(WalkBack)].verification := @WalkBackVerification;
+  statesArray[Ord(WalkBack)].nextState := Rock1;
+  statesArray[Ord(WalkBack)].failedState := Logout;
+  statesArray[Ord(WalkBack)].gracePeriod := 4000;
+  statesArray[Ord(WalkBack)].deadTime := 1200;
+  statesArray[Ord(WalkBack)].deadTimeVariance := 350;
+
+  statesArray[Ord(Logout)].action := @LogoutAction;
+  statesArray[Ord(Logout)].verification := @LogoutVerification;
+  statesArray[Ord(Logout)].nextState := Logout;
+  statesArray[Ord(Logout)].failedState := Logout;
+  statesArray[Ord(Logout)].gracePeriod := 5000;
+  statesArray[Ord(Logout)].deadTime := 650;
+  statesArray[Ord(Logout)].deadTimeVariance := 250;
+
+  //initial state
+  currentState := Rock1;
+  GetMousePos(mouseTarX,mouseTarY);
+  wasPaused := true;
+  hotkeysPauseRequested := true;
+  Log('Script starting paused - press PAUSE key to start');
+
+  repeat
+    currentTime := GetTimeRunning();
+    CheckHotKeys();
+    if(hotkeysPauseRequested = false) then
+    begin
+      HandleMouse();
+
+      //if just unpaused, figure out what state we're in
+      //
+      //should probably rewrite this to proceed through the steps following the
+      //logical order, rather than looping through all possible states in case
+      //we use some for branching
+      if(wasPaused) then
+      begin
+        Log('Unpaused - verifying state before proceeding');
+        stateFound := false;
+        wasPaused := false;
+        for st := Low(STATES) to High(States) do
+        begin
+          if(stateFound = false) then
+          begin
+            if(statesArray[Ord(st)].verification) then
+            begin
+              stateFound := true;
+              currentState := st;
+              Log('State verification succeeded, assuming this is the current state');
+            end else
+            begin
+              Log('State ' + IntToStr(Ord(st)) + ' verification failed, trying next state');
+            end;
+          end;
+        end;
+      end;
+
+      //main loop here
+      if(verified = false) then
+      begin
+        if(currentTime > (nextActionTime + statesArray[Ord(currentState)].gracePeriod)) then
+        begin
+          if(statesArray[Ord(currentState)].verification) then
+          begin
+            verified := true;
+            nextActionTime := currentTime + variance(statesArray[Ord(currentState)].deadTime, statesArray[Ord(currentState)].deadTimeVariance);
+            Log('State was verified. Performing action at ' + IntToStr(nextActionTime));
+          end;
+          if(currentTime > (nextActionTime + statesArray[Ord(currentState)].gracePeriod + verificationLimit)) then
+          begin
+            Log('Exceeded time limit. Setting state to failed state');
+            currentState := statesArray[Ord(currentState)].failedState;
+            nextActionTime := currentTime + variance(statesArray[Ord(currentState)].deadTime, statesArray[Ord(currentState)].deadTimeVariance);
+            verified := false;
+          end;
+        end;
+        //end;
+      end else
+      begin
+        if(currentTime > nextActionTime) then
+        begin
+          if(statesArray[Ord(currentState)].action) then
+          begin
+            //action was successful
+            Log('Action successful. Proceeding to next state.');
+            currentState := statesArray[Ord(currentState)].nextState;
+            verified := false;
+          end else
+          begin
+            //action was not successful
+            Log('Action FAILED. Setting state to failed state');
+            currentState := statesArray[Ord(currentState)].failedState;
+            verified := false;
+          end;
+        end;
+      end;
+
+    end else
+    begin
+      //we are currently paused
+      wasPaused := true;
+    end;
+  until(isLoggedIn() = false);
+  Log('Logout detecting.');
+end.
