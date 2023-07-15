@@ -1,10 +1,19 @@
 program sandstone;
-//put giant seaweed in first bank position
-//put buckets of sand in second bank slot
+//put buckets of sand in first bank position
+//put giant seaweed in second bank slot
 //Shift-rightclick, set "swap left click" for buckets to "withdraw 18"
 //Set molten glass to deposit all
 //Put astrals in last inv slot
 //open spellbook
+//mouse over a bank and hit PAUSE, will use mouse coords for bank
+//
+//color of molten glass in inv (573,224) line 221
+//color of empty spot in inv (573,224) line 232
+//color of 18th bucket of sand in inv (620,368) line 243
+//color of 3rd seaweed (579,407) line 254
+//color of superglass make spell in spellbook (560,322) line 265
+//
+//currently needs a molten glass in inv to get started. need to fix...
 
 Type STATES = (OpenBank, DepositGlass, Sand, Seaweed, CloseBank, Cast, Logout);
 Type TFuncNoArgsBool = function():Boolean;
