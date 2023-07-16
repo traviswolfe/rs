@@ -1,0 +1,434 @@
+program blow;
+
+Type STATES = (OpenBank, DepositOrb, WithdrawGlass, CloseBank, Pipe, Glass, Confirm, Logout);
+Type TFuncNoArgsBool = function():Boolean;
+Type state = record
+    action : TFuncNoArgsBool;        //Function that defines the action/behavior
+    verification : TFuncNoArgsBool;  //Function that verifies we're in the correct state
+    nextState : STATES;              //State we should transition to upon success
+    failedState : STATES;            //State we transition to upon failure
+    gracePeriod : Integer;           //How long to wait for success to happen
+    deadTime : Integer;              //How long to wait after success before performing action
+    deadTimeVariance : Integer;      //Variance for dead time
+  end;
+Type statesArrayType = Array[0..Ord(High(STATES))] of state;
+Var statesArray: statesArrayType;
+function fcn(AFunction: TFuncNoArgsBool): Boolean;
+begin
+  result := AFunction()
+end;
+
+var
+mouseTarX,mouseTarY,mouseTarTime,mouseStartTime,mouseXDelta,mouseYDelta,
+mouseClicksLeft,mouseClickStart,mouseClickUntil,mouseClickDelay:Integer = 0;
+mouseIsDown:Boolean = false;
+
+hotkeysPause:Integer = 19; //pause script
+hotkeysEscape:Integer = 27;//escape, close window or go to logout tab
+hotkeysEnd:Integer = 35;   //stop script
+hotkeysHome:Integer = 36;  //Logout
+hotkeysPauseLatch,hotkeysHomeLatch,hotkeysPauseRequested:Boolean = false;
+
+
+currentTime,verifiedTime,nextActionTime,logoutDetectedTime:Integer = 0;
+verificationLimit:Integer = 10000;
+done,verified,wasPaused,stateFound,logoutPossible:Boolean = false;
+currentState,st:STATES;
+
+bankX,bankY:Integer = 0;
+
+procedure Log(msg:String);
+begin
+  Write(FormatDateTime('hh:mm:ss',Now()) + ' : ');
+  Write(currentState);
+  WriteLn(': ' + msg);
+end;
+
+function variance(num:Integer;varianceAmount:Integer):Integer;
+begin
+  result := num - varianceAmount + RandomRange(0,varianceAmount) + RandomRange(0,varianceAmount);
+end;
+
+procedure MoveAndClick(X:Integer; Y:Integer; NumClicks:Integer);
+var mouseCurrentX,mouseCurrentY:Integer;
+begin
+  //Get the current mouse position, calculate the delta the mouse needs to move
+  //by. Then set the amount of time it should take to reach the destination,
+  //as well as how long after it reaches the destination before clicking.
+  GetMousePos(mouseCurrentX,mouseCurrentY);
+  mouseTarX := X;
+  mouseTarY := Y;
+  mouseXDelta := mouseTarX - mouseCurrentX;
+  mouseYDelta := mouseTarY - mouseCurrentY;
+  mouseClicksLeft := NumClicks;
+  mouseStartTime := GetTimeRunning();
+  mouseTarTime := mouseStartTime + variance(220,80);
+  mouseClickDelay := mouseTarTime + variance(170,30);
+end;
+
+procedure HandleMouse;
+var percent: Double;
+begin
+  //if we haven't reached the target time, then mouse should be in middle
+  //of a movement
+  if(currentTime < mouseTarTime) then
+  begin
+    percent := 1 - ((currentTime - mouseStartTime) / (mouseTarTime - mouseStartTime));
+    MoveMouse(Round(mouseTarX - (percent * mouseXDelta)),Round(mouseTarY - (percent * mouseYDelta)));
+  end else
+  //otherwise, we're not in the middle of a movement, and handle any clicks
+  begin
+    MoveMouse(mouseTarX,mouseTarY);
+    //if there are clicks left to perform, and we haven't passed the delay
+    //then wait until the delay has passed, and then perform a click
+    if((mouseClicksLeft > 0) and (mouseClickDelay < currentTime)) then
+    begin
+      HoldMouse(mouseTarX,mouseTarY,mouse_Left);
+      mouseClickUntil := currentTime + variance (100,30);
+      mouseClickDelay := mouseClickUntil + variance (100,30);
+      mouseClicksLeft := mouseClicksLeft - 1;
+      mouseIsDown := true;
+    end else if((mouseIsDown = true) and (mouseClickUntil < currentTime)) then
+    //wait until we've held down the mouse for long enough, then release
+    begin
+      ReleaseMouse(mouseTarX,mouseTarY,mouse_Left);
+      mouseIsDown := false;
+    end;
+  end;
+end;
+
+procedure CheckHotkeys;
+begin
+  //Check if script end is requested by pressing "end" key
+  if(IsKeyDown(hotkeysEnd)) then
+  begin
+    Log('END key pressed. Exiting script.');
+    Halt();
+  end;
+
+  //Check if script should be paused
+  if(IsKeyDown(hotkeysPause) and (hotkeysPauseLatch = false)) then
+  begin
+    hotkeysPauseLatch := true;
+    if(hotkeysPauseRequested) then
+    begin
+      Log('PAUSE key pressed. Resuming script.');
+      GetMousePos(bankX,bankY);
+      Log('Setting bank coords to ' + IntToStr(bankX) + ',' + IntToStr(bankY));
+      hotkeysPauseRequested := false;
+    end else
+    begin
+      Log('PAUSE key pressed. Pausing until PAUSE is pressed again.');
+      hotkeysPauseRequested := true;
+    end;
+  end;
+  //Unlatch Pause (prevents multiple pause/unpause situations when holding key for a long time)
+  if(hotkeysPauseLatch and (IsKeyDown(hotkeysPause) = false)) then
+  begin
+    hotkeysPauseLatch := false;
+  end;
+
+  //Check if logout button pressed
+  if(IsKeyDown(hotkeysHome) and (hotkeysHomeLatch = false)) then
+  begin
+    hotkeysHomeLatch := true;
+    Log('HOME key pressed. Attempting logout and pausing.');
+    //Logout();
+    hotkeysPauseRequested := true;
+  end;
+  //Unlatch logout
+  if(hotkeysHomeLatch and (IsKeyDown(hotkeysHome) = false)) then
+  begin
+    hotkeysHomeLatch := false;
+  end;
+end;
+
+function isLoggedIn():Boolean;
+begin
+  //Check the pixel in the timer. Wait at least 100ms after it changes before
+  //assuming we're logged out (for some reason level ups cause it to flash white
+  //for less than a frame, which we can catch)
+  result := true;
+  if(GetColor(446,488) = 1908328) then
+  begin
+    logoutPossible := false;
+  end else
+  begin
+    if(logoutPossible) then
+    begin
+      if(currentTime > (logoutDetectedTime + 100))
+      then
+      begin
+        result := false;
+      end;
+    end else
+    begin
+      logoutPossible := true;
+      logoutDetectedTime := currentTime;
+    end;
+  end;
+end;
+function isRunning():Boolean;
+begin
+  result := GetColor(568,128) = 6806252;
+end;
+function isRunEnergyMaxed():Boolean;
+begin
+  result := GetColor(534,131) = 65280;
+end;
+
+function isBackpackFull():Boolean;
+begin
+  result := GetColor(703,447) <> 3489352;
+end;
+
+
+
+function OpenBankAction():Boolean;
+begin
+  MoveAndClick(variance(bankX,16),variance(bankY,16), 1);
+  result:=true;
+end;
+function OpenBankVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,533562,577,234,579,236); //color of Empty Light Orb in 1st slot, 578,235
+end;
+
+function DepositOrbAction():Boolean;
+begin
+  MoveAndClick(variance(578,6),variance(229,6), 1);
+  result:=true;
+end;
+function DepositOrbVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,3292485,30,49,32,51); //color of bank background 31,50
+end;
+
+function WithdrawGlassAction():Boolean;
+begin
+  MoveAndClick(variance(87,6),variance(99,6), 1);
+  result:=true;
+end;
+function WithdrawGlassVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,3489865,577,234,579,236); //empty first inv slot, same spot we're looking at for light orb 578,235
+end;
+
+function CloseBankAction():Boolean;
+begin
+  MoveAndClick(variance(486,5),variance(22,5), 1);
+  result:=true;
+end;
+function CloseBankVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=(FindColor(tempX,tempY,9083857,663,447,665,449) and FindColor(tempX,tempY,3292485,30,49,32,51)); //27th slot of inv has molten glass, 664,448 AND bank is open 31,50
+end;
+
+function PipeAction():Boolean;
+begin
+  MoveAndClick(variance(704,8),variance(442,8), 1);
+  result:=true;
+end;
+function PipeVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=(FindColor(tempX,tempY,9083857,663,447,665,449) and (FindColor(tempX,tempY,3292485,30,49,32,51) = false)); //27th slot of inv has molten glass, 664,448 AND bank is closed 31,50
+end;
+
+function GlassAction():Boolean;
+begin
+  MoveAndClick(variance(662,8),variance(442,8), 1);
+  result:=true;
+end;
+function GlassVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,16777215,698,447,700,449); //glassblowing pipe has been selected (highlighted), 699,448
+end;
+
+function ConfirmAction():Boolean;
+begin
+  MoveAndClick(variance(476,16),variance(421,16), 1);
+  result:=true;
+end;
+function ConfirmVerification:Boolean;
+var tempX,tempY:Integer;
+begin
+  result:=FindColor(tempX,tempY,400430,476,435,478,437); //color of light orb in confirmation window 477,436
+end;
+
+
+
+function LogoutAction():Boolean;
+begin
+  PressKey(27);//ESC
+  Wait(variance(400,175));
+  PressKey(27);//Press for a second time, in case other menu is open
+  MoveAndClick(variance(641,70),variance(431,17), 1);
+  result := true;
+end;
+function LogoutVerification():Boolean;
+begin
+  result := isLoggedIn();
+end;
+
+
+begin
+  //define states
+  statesArray[Ord(OpenBank)].action := @OpenBankAction;
+  statesArray[Ord(OpenBank)].verification := @OpenBankVerification;
+  statesArray[Ord(OpenBank)].nextState := DepositOrb;
+  statesArray[Ord(OpenBank)].failedState := Logout;
+  statesArray[Ord(OpenBank)].gracePeriod := 48000;
+  statesArray[Ord(OpenBank)].deadTime := 4000;
+  statesArray[Ord(OpenBank)].deadTimeVariance := 3500;
+
+  statesArray[Ord(DepositOrb)].action := @DepositOrbAction;
+  statesArray[Ord(DepositOrb)].verification := @DepositOrbVerification;
+  statesArray[Ord(DepositOrb)].nextState := WithdrawGlass;
+  statesArray[Ord(DepositOrb)].failedState := Logout;
+  statesArray[Ord(DepositOrb)].gracePeriod := 1000;
+  statesArray[Ord(DepositOrb)].deadTime := 500;
+  statesArray[Ord(DepositOrb)].deadTimeVariance := 150;
+
+  statesArray[Ord(WithdrawGlass)].action := @WithdrawGlassAction;
+  statesArray[Ord(WithdrawGlass)].verification := @WithdrawGlassVerification;
+  statesArray[Ord(WithdrawGlass)].nextState := CloseBank;
+  statesArray[Ord(WithdrawGlass)].failedState := Logout;
+  statesArray[Ord(WithdrawGlass)].gracePeriod := 1000;
+  statesArray[Ord(WithdrawGlass)].deadTime := 600;
+  statesArray[Ord(WithdrawGlass)].deadTimeVariance := 250;
+
+  statesArray[Ord(CloseBank)].action := @CloseBankAction;
+  statesArray[Ord(CloseBank)].verification := @CloseBankVerification;
+  statesArray[Ord(CloseBank)].nextState := Pipe;
+  statesArray[Ord(CloseBank)].failedState := Logout;
+  statesArray[Ord(CloseBank)].gracePeriod := 1000;
+  statesArray[Ord(CloseBank)].deadTime := 600;
+  statesArray[Ord(CloseBank)].deadTimeVariance := 250;
+
+  statesArray[Ord(Pipe)].action := @PipeAction;
+  statesArray[Ord(Pipe)].verification := @PipeVerification;
+  statesArray[Ord(Pipe)].nextState := Glass;
+  statesArray[Ord(Pipe)].failedState := Logout;
+  statesArray[Ord(Pipe)].gracePeriod := 300;
+  statesArray[Ord(Pipe)].deadTime := 600;
+  statesArray[Ord(Pipe)].deadTimeVariance := 250;
+
+  statesArray[Ord(Glass)].action := @GlassAction;
+  statesArray[Ord(Glass)].verification := @GlassVerification;
+  statesArray[Ord(Glass)].nextState := Confirm;
+  statesArray[Ord(Glass)].failedState := Logout;
+  statesArray[Ord(Glass)].gracePeriod := 300;
+  statesArray[Ord(Glass)].deadTime := 250;
+  statesArray[Ord(Glass)].deadTimeVariance := 150;
+
+  statesArray[Ord(Confirm)].action := @ConfirmAction;
+  statesArray[Ord(Confirm)].verification := @ConfirmVerification;
+  statesArray[Ord(Confirm)].nextState := OpenBank;
+  statesArray[Ord(Confirm)].failedState := Logout;
+  statesArray[Ord(Confirm)].gracePeriod := 400;
+  statesArray[Ord(Confirm)].deadTime := 600;
+  statesArray[Ord(Confirm)].deadTimeVariance := 250;
+
+  statesArray[Ord(Logout)].action := @LogoutAction;
+  statesArray[Ord(Logout)].verification := @LogoutVerification;
+  statesArray[Ord(Logout)].nextState := Logout;
+  statesArray[Ord(Logout)].failedState := Logout;
+  statesArray[Ord(Logout)].gracePeriod := 5000;
+  statesArray[Ord(Logout)].deadTime := 650;
+  statesArray[Ord(Logout)].deadTimeVariance := 250;
+
+  //initial state
+  currentState := OpenBank;
+  GetMousePos(mouseTarX,mouseTarY);
+  wasPaused := true;
+  hotkeysPauseRequested := true;
+  Log('Script starting paused - press PAUSE key to start');
+
+  repeat
+    currentTime := GetTimeRunning();
+    CheckHotKeys();
+    if(hotkeysPauseRequested = false) then
+    begin
+      HandleMouse();
+
+      //if just unpaused, figure out what state we're in
+      //
+      //should probably rewrite this to proceed through the steps following the
+      //logical order, rather than looping through all possible states in case
+      //we use some for branching
+      if(wasPaused) then
+      begin
+        Log('Unpaused - verifying state before proceeding');
+        stateFound := false;
+        wasPaused := false;
+        for st := Low(STATES) to High(States) do
+        begin
+          if(stateFound = false) then
+          begin
+            if(statesArray[Ord(st)].verification) then
+            begin
+              stateFound := true;
+              currentState := st;
+              Log('State verification succeeded, assuming this is the current state');
+            end else
+            begin
+              Log('State ' + IntToStr(Ord(st)) + ' verification failed, trying next state');
+            end;
+          end;
+        end;
+      end;
+
+      //main loop here
+      if(verified = false) then
+      begin
+        if(currentTime > (nextActionTime + statesArray[Ord(currentState)].gracePeriod)) then
+        begin
+          if(statesArray[Ord(currentState)].verification) then
+          begin
+            verified := true;
+            nextActionTime := currentTime + variance(statesArray[Ord(currentState)].deadTime, statesArray[Ord(currentState)].deadTimeVariance);
+            Log('State was verified. Performing action at ' + IntToStr(nextActionTime));
+          end;
+          if(currentTime > (nextActionTime + statesArray[Ord(currentState)].gracePeriod + verificationLimit)) then
+          begin
+            Log('Exceeded time limit. Setting state to failed state');
+            currentState := statesArray[Ord(currentState)].failedState;
+            nextActionTime := currentTime + variance(statesArray[Ord(currentState)].deadTime, statesArray[Ord(currentState)].deadTimeVariance);
+            verified := false;
+          end;
+        end;
+        //end;
+      end else
+      begin
+        if(currentTime > nextActionTime) then
+        begin
+          if(statesArray[Ord(currentState)].action) then
+          begin
+            //action was successful
+            Log('Action successful. Proceeding to next state.');
+            currentState := statesArray[Ord(currentState)].nextState;
+            verified := false;
+          end else
+          begin
+            //action was not successful
+            Log('Action FAILED. Setting state to failed state');
+            currentState := statesArray[Ord(currentState)].failedState;
+            verified := false;
+          end;
+        end;
+      end;
+
+    end else
+    begin
+      //we are currently paused
+      wasPaused := true;
+    end;
+  until(isLoggedIn() = false);
+  Log('Logout detecting.');
+end.
